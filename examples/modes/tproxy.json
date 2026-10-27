@@ -1,0 +1,10 @@
+{
+  "inbounds": [
+    {
+      "type": "tproxy",
+      "tag": "tproxy-in",
+      "listen": "127.0.0.1",
+      "listen_port": 1081
+    }
+  ]
+}

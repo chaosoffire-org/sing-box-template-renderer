@@ -1,0 +1,55 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "local",
+        "address": "https://dns.example.com/dns-query",
+        "detour": "direct"
+      }
+    ],
+    "final": "local"
+  },
+  "inbounds": [],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "proxy",
+      "server": "proxy.example.com",
+      "server_port": 443,
+      "uuid": "{{.UUID}}",
+      "tls": {
+        "enabled": true,
+        "server_name": "{{.Name}}.example.com"
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "$hook": "prefix"
+      },
+      {
+        "action": "sniff"
+      },
+      {
+        "ip_is_private": true,
+        "outbound": "direct"
+      }
+    ],
+    "final": "proxy",
+    "auto_detect_interface": true
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true
+    }
+  }
+}
