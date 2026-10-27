@@ -289,6 +289,21 @@ location = /sing-box.json {
 The client keeps using its existing subscription URL. Query parameters such as
 `?inbound=tproxy` are preserved by `$is_args$args`.
 
+## CI/CD
+
+GitHub Actions runs the test suite and builds the container image for
+`linux/amd64` and `linux/arm64` with Buildx and QEMU. No image is built on the
+deployment host.
+
+Images are published to
+`ghcr.io/chaosoffire-org/sing-box-template-renderer`:
+
+- pushes to `main` publish `latest` and a short-SHA tag
+- `v*` tags publish semver tags
+- pull requests build the image without pushing it
+
+Production hosts only pull the published image. They do not build it locally.
+
 ## Security notes
 
 - **`X-Auth-User` is a trust boundary.** The service does no authentication. It
