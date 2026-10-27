@@ -1,5 +1,8 @@
 # sb-render
 
+> **Personal project.** This is for my own use. It is not an open-source-standard
+> project and comes with no support, stability, or security guarantees.
+
 Per-user sing-box client config renderer, small enough to audit in one sitting.
 
 `sb-render` reads a shared base template, a per-mode fragment, and a per-user
@@ -255,8 +258,8 @@ Ready-to-copy examples live in the repository:
   proxy passing `X-Auth-User: $remote_user` to `127.0.0.1:8080/render`
 - [deploy/sb-render.service.example](deploy/sb-render.service.example): hardened
   systemd unit for the loopback-only binary
-- [Dockerfile](Dockerfile): static binary, non-root UID 10001, read-only config
-  mount
+- [Dockerfile](Dockerfile): static binary in a scratch runtime, non-root UID
+  10001, read-only config mount
 
 The important constraints:
 
@@ -375,6 +378,9 @@ rendered configs when a `sing-box` binary is on `PATH`. A clean run ends with
 `gofmt -l .` should print nothing.
 
 ## Publishing
+
+The canonical repository is
+<https://github.com/chaosoffire-org/sing-box-template-renderer>.
 
 This directory is already a git repository with the work committed. The flow
 below is for publishing a fresh copy, for example after exporting this

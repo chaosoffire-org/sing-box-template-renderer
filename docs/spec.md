@@ -337,10 +337,11 @@ contains real UUIDs and must never be committed; `config/` is gitignored.
   `X-Auth-User: $remote_user`.
 - `deploy/sb-render.service.example` runs the binary as an unprivileged user
   with a hardened systemd unit and a loopback-only listener.
-- `Dockerfile` builds a static binary and runs it as UID 10001. The container
-  binds `0.0.0.0` internally and therefore passes `--allow-public`; that is only
-  safe when the published port is restricted to host loopback or a private
-  network and nginx still authenticates in front of it.
+- `Dockerfile` builds a static binary and ships it in a scratch runtime, running
+  as UID 10001. The container binds `0.0.0.0` internally and therefore passes
+  `--allow-public`; that is only safe when the published port is restricted to
+  host loopback or a private network and nginx still authenticates in front of
+  it.
 
 No real config is baked into the image or the repository. Mount `users/`,
 `modes/`, and `templates/` read-only at runtime.

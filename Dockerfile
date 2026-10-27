@@ -1,40 +1,26 @@
-# Multi-stage build for sb-render.
+# syntax=docker/dockerfile:1
 #
-# The runtime image contains only the static binary, CA roots, and an empty
-# /config mount point. Real users/, modes/, and templates/ are mounted at run
-# time and never baked into the image.
-#
-# SECURITY: the runtime CMD passes --allow-public because the container binds
-# 0.0.0.0 internally. That is only safe when the published port is reachable
-# solely from host loopback or a private network, and nginx still terminates
-# TLS and performs Basic Auth in front of it. Never publish this port directly
-# to the internet.
+# Build with golang:alpine, then ship only the static binary in a scratch image.
+# The runtime has no shell, package manager, CA bundle, or tzdata. sb-render
+# only reads mounted config files and serves HTTP, so nginx still owns TLS.
 
-FROM golang:1.27 AS build
+FROM golang:alpine AS build
 
 WORKDIR /src
-
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/sb-render ./cmd/sb-render
 
-FROM alpine:3.22
+FROM scratch
 
-RUN apk add --no-cache ca-certificates tzdata \
-	&& addgroup -g 10001 -S sb-render \
-	&& adduser -u 10001 -S -G sb-render -h /nonexistent -s /sbin/nologin sb-render \
-	&& mkdir -p /config \
-	&& chown 10001:10001 /config
+COPY --from=build /out/sb-render /sb-render
 
-COPY --from=build /out/sb-render /usr/local/bin/sb-render
-
+# Numeric UID/GID; no /etc/passwd is needed in scratch.
 USER 10001:10001
 EXPOSE 8080
 
-# --allow-public is only safe when the container port is published to host
-# loopback or a private network; nginx still owns authentication. The Go
-# service must never be exposed directly.
-ENTRYPOINT ["/usr/local/bin/sb-render"]
+# The container binds 0.0.0.0 internally. Only safe when the published port is
+# restricted to host loopback or a private network; nginx still authenticates.
+ENTRYPOINT ["/sb-render"]
 CMD ["--config","/config","--listen","0.0.0.0:8080","--allow-public"]

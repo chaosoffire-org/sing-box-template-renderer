@@ -11,3 +11,6 @@ tmp/
 *.local.json
 Dockerfile
 .dockerignore
+__pycache__/
+*.pyc
+.ruff_cache/
