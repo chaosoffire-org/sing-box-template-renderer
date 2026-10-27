@@ -1,0 +1,75 @@
+# Example nginx front end for sb-render.
+#
+# Flow: client --HTTPS/Basic Auth--> nginx --HTTP on loopback--> sb-render.
+#
+# SECURITY: the Go service trusts the X-Auth-User header. It must only ever
+# listen on 127.0.0.1 (the default) and must never be started with
+# --allow-public. nginx is the only component allowed to reach it, and it
+# overwrites X-Auth-User with the Basic Auth username below. Binding the Go
+# service to a public interface would let anyone impersonate any user.
+#
+# Replace provider.example.com, the certificate paths, and the htpasswd path.
+# Create the password file with:
+#   htpasswd -c /etc/nginx/htpasswd/sb-render general
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+
+    server_name provider.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/provider.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/provider.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    server_tokens off;
+
+    # Basic Auth happens here, not in the Go service.
+    auth_basic           "sing-box config";
+    auth_basic_user_file /etc/nginx/htpasswd/sb-render;
+
+    access_log /var/log/nginx/sb-render.access.log;
+    error_log  /var/log/nginx/sb-render.error.log warn;
+
+    # The client subscribes to /sing-box.json. ?inbound=tproxy is preserved
+    # by $is_args$args, so the Go service still selects the tproxy mode; an
+    # empty query falls back to the tun default.
+    location = /sing-box.json {
+        # Only nginx can reach the Go service; keep it on loopback.
+        proxy_pass http://127.0.0.1:8080/render$is_args$args;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Auth handoff. A proxy_set_header always replaces the incoming
+        # value, so a client cannot spoof another user's identity.
+        proxy_set_header X-Auth-User $remote_user;
+
+        # Let sb-render own caching semantics (private, no-store, ETag).
+        proxy_buffering off;
+    }
+
+    # Bare visits get the same config (default tun mode).
+    location = / {
+        proxy_pass http://127.0.0.1:8080/render$is_args$args;
+
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header X-Auth-User $remote_user;
+
+        proxy_buffering off;
+    }
+
+    # There is deliberately no root, try_files, or static sing-box.json here:
+    # every config is generated per request by the loopback-only Go service.
+}

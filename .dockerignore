@@ -1,0 +1,13 @@
+.git
+.gitignore
+.github
+config/
+bin/
+tmp/
+.omo/
+/sb-render
+*.log
+.env
+*.local.json
+Dockerfile
+.dockerignore

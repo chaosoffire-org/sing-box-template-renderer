@@ -1,0 +1,52 @@
+# Example systemd unit for sb-render.
+#
+# Install:
+#   useradd --system --home /nonexistent --shell /usr/sbin/nologin sb-render
+#   install -Dm0755 sb-render /usr/local/bin/sb-render
+#   install -d -o root -g sb-render -m 0750 /etc/sb-render
+#   chown -R root:sb-render /etc/sb-render
+#   chmod -R g+rX /etc/sb-render
+#   install -m0644 deploy/sb-render.service.example \
+#       /etc/systemd/system/sb-render.service
+#   systemctl daemon-reload
+#   systemctl enable --now sb-render
+#
+# The service binds loopback only on purpose: it trusts X-Auth-User and must
+# sit behind nginx. Never add --allow-public to this unit.
+
+[Unit]
+Description=sing-box template renderer (loopback HTTP, behind nginx)
+Documentation=https://github.com/example/sing-box-template-renderer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sb-render
+Group=sb-render
+ExecStart=/usr/local/bin/sb-render --config /etc/sb-render --listen 127.0.0.1:8080 --log-level info
+Restart=on-failure
+RestartSec=2s
+
+# Hardening. Config is read-only and secrets have no reason to be writable.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/sb-render
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0027
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
