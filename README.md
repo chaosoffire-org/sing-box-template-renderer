@@ -291,16 +291,21 @@ The client keeps using its existing subscription URL. Query parameters such as
 
 ## CI/CD
 
-GitHub Actions runs the test suite and builds the container image for
-`linux/amd64` and `linux/arm64` with Buildx and QEMU. No image is built on the
-deployment host.
+GitHub Actions runs the test suite on `ubuntu-latest`. When the tests pass, the
+container image is built natively per architecture: amd64 on `ubuntu-26.04` and
+arm64 on `ubuntu-26.04-arm`. There is no QEMU emulation and no image is built on
+the deployment host.
 
-Images are published to
+Each architecture build pushes its image by digest, then a merge job assembles
+the digests into a multi-arch manifest. Images are published to
 `ghcr.io/chaosoffire-org/sing-box-template-renderer`:
 
 - pushes to `main` publish `latest` and a short-SHA tag
 - `v*` tags publish semver tags
-- pull requests build the image without pushing it
+- pull requests only run tests; they do not push an image
+
+Public repositories use standard GitHub-hosted runners, which are free and
+unlimited for public repositories.
 
 Production hosts only pull the published image. They do not build it locally.
 
