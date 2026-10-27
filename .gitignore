@@ -1,0 +1,7 @@
+config/
+*.local.json
+bin/
+tmp/
+.env
+*.log
+/sb-render
