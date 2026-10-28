@@ -30,7 +30,7 @@ const (
 // *render.Loader is the production implementation; tests can substitute a
 // fake to exercise specific error paths.
 type ConfigLoader interface {
-	Load(name, inbound string) (render.Config, error)
+	Load(name, mode string) (render.Config, error)
 }
 
 type server struct {
@@ -71,12 +71,12 @@ func (s *server) handleRender(c *gin.Context) {
 		return
 	}
 
-	// An empty inbound is passed through unchanged; the loader defaults it to
-	// "tun". The header is the only identity source: query parameters never
-	// select a user.
-	inbound := c.Query("inbound")
+	// An empty mode is passed through unchanged; the loader falls back to the
+	// user's default. The header is the only identity source: query parameters
+	// never select a user.
+	mode := c.Query("mode")
 
-	cfg, err := s.loader.Load(user, inbound)
+	cfg, err := s.loader.Load(user, mode)
 	if err != nil {
 		status, message := errorStatus(err)
 		writeError(c, status, message)
@@ -150,12 +150,14 @@ func errorStatus(err error) (int, string) {
 	switch {
 	case errors.Is(err, render.ErrInvalidName):
 		return http.StatusBadRequest, "invalid request"
-	case errors.Is(err, render.ErrTproxyNotAllowed):
-		return http.StatusForbidden, "tproxy not allowed"
-	case errors.Is(err, render.ErrUnknownUser), errors.Is(err, render.ErrUnknownMode):
+	case errors.Is(err, render.ErrModeNotAllowed):
+		return http.StatusForbidden, "mode not allowed"
+	case errors.Is(err, render.ErrUnknownUser),
+		errors.Is(err, render.ErrUnknownMode),
+		errors.Is(err, render.ErrUnknownTemplate):
 		return http.StatusNotFound, "not found"
 	default:
-		// Includes render.ErrUnknownTemplate and render.ErrInvalidConfig.
+		// Includes render.ErrInvalidConfig and any unrecognized error.
 		return http.StatusInternalServerError, "render failed"
 	}
 }

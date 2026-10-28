@@ -178,8 +178,8 @@ if [[ "$status" == "200" ]]; then
 	fi
 fi
 
-status=$(get GET "$BASE/render?inbound=tproxy" -H 'X-Auth-User: general' || true)
-expect_status "GET /render?inbound=tproxy general" 200 "$status"
+status=$(get GET "$BASE/render?mode=tproxy" -H 'X-Auth-User: general' || true)
+expect_status "GET /render?mode=tproxy general" 200 "$status"
 if [[ "$status" == "200" ]]; then
 	cp "$BODY" "$TPROXY_BODY"
 
@@ -210,14 +210,14 @@ if [[ "$status" == "200" ]]; then
 	fi
 fi
 
-status=$(get GET "$BASE/render?inbound=tproxy" -H 'X-Auth-User: alice' || true)
-expect_status "GET /render?inbound=tproxy alice (tproxy not allowed)" 403 "$status"
+status=$(get GET "$BASE/render?mode=tproxy" -H 'X-Auth-User: alice' || true)
+expect_status "GET /render?mode=tproxy alice (mode not allowed)" 403 "$status"
 
 status=$(get GET "$BASE/render" -H 'X-Auth-User: nobody' || true)
 expect_status "GET /render unknown user" 404 "$status"
 
-status=$(get GET "$BASE/render?inbound=bogus" -H 'X-Auth-User: general' || true)
-expect_status "GET /render bad inbound" 400 "$status"
+status=$(get GET "$BASE/render?mode=bogus" -H 'X-Auth-User: general' || true)
+expect_status "GET /render bad mode" 400 "$status"
 
 status=$(get GET "$BASE/render" || true)
 expect_status "GET /render missing X-Auth-User" 401 "$status"

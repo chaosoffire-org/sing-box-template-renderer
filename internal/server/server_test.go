@@ -40,16 +40,16 @@ var etagPattern = regexp.MustCompile(`^"[0-9a-f]{64}"$`)
 // fakeLoader returns a fixed Config or error and records the arguments it
 // received so header/query plumbing can be asserted.
 type fakeLoader struct {
-	cfg     render.Config
-	err     error
-	name    string
-	inbound string
-	calls   int
+	cfg   render.Config
+	err   error
+	name  string
+	mode  string
+	calls int
 }
 
-func (f *fakeLoader) Load(name, inbound string) (render.Config, error) {
+func (f *fakeLoader) Load(name, mode string) (render.Config, error) {
 	f.name = name
-	f.inbound = inbound
+	f.mode = mode
 	f.calls++
 	return f.cfg, f.err
 }
@@ -64,7 +64,7 @@ func newRouter(loader ConfigLoader) *gin.Engine {
 
 func testConfig() render.Config {
 	return render.Config{
-		User:     render.User{UUID: testUUID, AllowTproxy: true},
+		User:     render.User{UUID: testUUID},
 		Mode:     render.Mode{Inbounds: []any{map[string]any{"type": "tun", "tag": "tun-in"}}},
 		Template: []byte(testTemplate),
 	}
@@ -104,7 +104,7 @@ func TestRenderGET(t *testing.T) {
 	loader := &fakeLoader{cfg: testConfig()}
 	router := newRouter(loader)
 
-	rec := do(router, http.MethodGet, "/render?inbound=tproxy", map[string]string{
+	rec := do(router, http.MethodGet, "/render?mode=tproxy", map[string]string{
 		"X-Auth-User": "  general  ",
 	})
 
@@ -123,8 +123,8 @@ func TestRenderGET(t *testing.T) {
 	if loader.name != "general" {
 		t.Errorf("loader name = %q, want trimmed %q", loader.name, "general")
 	}
-	if loader.inbound != "tproxy" {
-		t.Errorf("loader inbound = %q, want tproxy", loader.inbound)
+	if loader.mode != "tproxy" {
+		t.Errorf("loader mode = %q, want tproxy", loader.mode)
 	}
 
 	body := rec.Body.Bytes()
@@ -147,7 +147,7 @@ func TestRenderGET(t *testing.T) {
 	}
 }
 
-func TestRenderGETEmptyInboundIsPassedThrough(t *testing.T) {
+func TestRenderGETEmptyModeIsPassedThrough(t *testing.T) {
 	loader := &fakeLoader{cfg: testConfig()}
 	router := newRouter(loader)
 
@@ -155,8 +155,8 @@ func TestRenderGETEmptyInboundIsPassedThrough(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if loader.inbound != "" {
-		t.Errorf("loader inbound = %q, want empty (loader applies the tun default)", loader.inbound)
+	if loader.mode != "" {
+		t.Errorf("loader mode = %q, want empty (loader applies the user default)", loader.mode)
 	}
 }
 
@@ -319,10 +319,10 @@ func TestRenderErrorMapping(t *testing.T) {
 			wantMsg:    "invalid request",
 		},
 		{
-			name:       "tproxy not allowed is 403",
-			err:        fmt.Errorf("load: %w", render.ErrTproxyNotAllowed),
+			name:       "mode not allowed is 403",
+			err:        fmt.Errorf("load: %w", render.ErrModeNotAllowed),
 			wantStatus: http.StatusForbidden,
-			wantMsg:    "tproxy not allowed",
+			wantMsg:    "mode not allowed",
 		},
 		{
 			name:       "unknown user is 404",
@@ -337,10 +337,10 @@ func TestRenderErrorMapping(t *testing.T) {
 			wantMsg:    "not found",
 		},
 		{
-			name:       "unknown template is 500",
+			name:       "unknown template is 404",
 			err:        fmt.Errorf("load: %w", render.ErrUnknownTemplate),
-			wantStatus: http.StatusInternalServerError,
-			wantMsg:    "render failed",
+			wantStatus: http.StatusNotFound,
+			wantMsg:    "not found",
 		},
 		{
 			name:       "invalid config is 500",
@@ -394,6 +394,16 @@ func TestRenderTemplateFailure(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "template") || strings.Contains(rec.Body.String(), "{{") {
 		t.Errorf("error body leaks template details: %q", rec.Body.String())
 	}
+}
+
+func TestRenderMissingTemplate(t *testing.T) {
+	router := newRouter(&fakeLoader{err: fmt.Errorf("load: %w", render.ErrUnknownTemplate)})
+	rec := do(router, http.MethodGet, "/render?mode=tun", map[string]string{"X-Auth-User": "general"})
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%q)", rec.Code, rec.Body.String())
+	}
+	assertErrorBody(t, rec, "not found")
 }
 
 func TestRenderInvalidIfNoneMatchDoesNotPanic(t *testing.T) {
@@ -456,11 +466,12 @@ func TestHealthz(t *testing.T) {
 func TestRealLoaderIntegration(t *testing.T) {
 	root := t.TempDir()
 	fixtures := map[string]string{
-		"users/general.json":       `{"uuid":"` + testUUID + `","allow_tproxy":true}`,
-		"users/alice.json":         `{"uuid":"22222222-3333-4444-5555-666666666666"}`,
-		"modes/tun.json":           `{"inbounds":[{"type":"tun","tag":"tun-in"}],"route":{"rules":{"prefix":[{"type":"field","tag":"prefix"}]}}}`,
-		"modes/tproxy.json":        `{"inbounds":[{"type":"tproxy","tag":"tproxy-in"}]}`,
-		"templates/base.json.tmpl": testTemplate,
+		"users/general.json":        `{"template":"owner","uuid":"` + testUUID + `","modes":["tproxy","tun"],"default":"tun"}`,
+		"users/alice.json":          `{"uuid":"22222222-3333-4444-5555-666666666666"}`,
+		"modes/tun.json":            `{"inbounds":[{"type":"tun","tag":"tun-in"}],"route":{"rules":{"prefix":[{"type":"field","tag":"prefix"}]}}}`,
+		"modes/tproxy.json":         `{"inbounds":[{"type":"tproxy","tag":"tproxy-in"}]}`,
+		"templates/base.json.tmpl":  testTemplate,
+		"templates/owner.json.tmpl": testTemplate,
 	}
 	for rel, content := range fixtures {
 		path := filepath.Join(root, rel)
@@ -491,13 +502,13 @@ func TestRealLoaderIntegration(t *testing.T) {
 		wantStatus  int
 		wantContain string
 	}{
-		{"general tun", "general", "?inbound=tun", http.StatusOK, `"tag": "tun-in"`},
+		{"general tun", "general", "?mode=tun", http.StatusOK, `"tag": "tun-in"`},
 		{"general default tun", "general", "", http.StatusOK, `"tag": "tun-in"`},
-		{"general tproxy", "general", "?inbound=tproxy", http.StatusOK, `"tag": "tproxy-in"`},
-		{"alice tun", "alice", "?inbound=tun", http.StatusOK, `"tag": "tun-in"`},
-		{"alice tproxy forbidden", "alice", "?inbound=tproxy", http.StatusForbidden, ""},
-		{"unknown user", "nobody", "?inbound=tun", http.StatusNotFound, ""},
-		{"invalid inbound", "general", "?inbound=bogus", http.StatusBadRequest, ""},
+		{"general tproxy allowed via modes", "general", "?mode=tproxy", http.StatusOK, `"tag": "tproxy-in"`},
+		{"alice tun", "alice", "?mode=tun", http.StatusOK, `"tag": "tun-in"`},
+		{"alice tproxy forbidden", "alice", "?mode=tproxy", http.StatusForbidden, ""},
+		{"unknown user", "nobody", "?mode=tun", http.StatusNotFound, ""},
+		{"invalid mode", "general", "?mode=bogus", http.StatusBadRequest, ""},
 	}
 
 	for _, tt := range tests {
@@ -524,7 +535,7 @@ func TestRealLoaderIntegration(t *testing.T) {
 				}
 			}
 			if tt.wantStatus == http.StatusForbidden {
-				assertErrorBody(t, rec, "tproxy not allowed")
+				assertErrorBody(t, rec, "mode not allowed")
 			}
 		})
 	}
