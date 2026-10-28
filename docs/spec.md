@@ -16,7 +16,7 @@ It does not implement, and will not implement:
 - user authentication or authorization beyond checking `X-Auth-User`
 - a database, panel, admin UI, traffic accounting, or subscription expiry
 - automatic certificates, ACME, or TLS termination
-- per-client templates, template inheritance, plugins, or a generic config DSL
+- template inheritance, partials, plugins, or a generic config DSL
 - a sing-box runtime or a `sing-box check` on every request
 
 TLS, Basic Auth, and rate limiting belong to nginx. Certificate issuance belongs
@@ -35,19 +35,24 @@ be a directory; the process refuses to start otherwise.
     <mode>.json
   templates/
     base.json.tmpl
+    owner.json.tmpl
 ```
 
-The file names are fixed. In particular the template is
-`templates/base.json.tmpl`; `base.json`, `base.tmpl`, and any inheritance
-mechanism are not read.
+`templates/base.json.tmpl` is the default template and the friend base.
+`templates/owner.json.tmpl` is the owner base and adds the top-level
+`http_clients` array. Any other profile file that passes the name pattern may
+exist; the server does not special-case `owner`. The examples use `owner` for the
+owner because the owner's current client config carries `http_clients`.
 
-Every request re-reads the three files it needs. There is no in-process config
-cache, so edits take effect on the next request.
+Every request re-reads the user file, the selected template, and the selected
+mode. There is no in-process config cache, so edits take effect on the next
+request.
 
 ## Names and path confinement
 
 User names come from the `X-Auth-User` request header (trimmed of surrounding
-whitespace). Mode names come from the `inbound` query parameter. Both must match:
+whitespace). Mode names come from the `mode` query parameter. Template profile
+names come from the user's `template` field. All three must match:
 
 ```text
 ^[A-Za-z0-9][A-Za-z0-9._-]*$
@@ -59,29 +64,58 @@ parent-directory components, and symlinks that resolve outside the root are
 rejected by the Go runtime. There is no fallback path.
 
 Names that fail the pattern produce `ErrInvalidName` and an HTTP 400. The only
-accepted mode values are `tun` and `tproxy`; any other value in `?inbound=` is
-also `ErrInvalidName`.
+accepted mode values are `tun` and `tproxy`. Any other value in the `mode` query
+or in a user's `modes` list is also `ErrInvalidName`.
+
+A template profile that fails the pattern produces `ErrInvalidName` and an HTTP 400. A valid template name whose file does not exist produces
+`ErrUnknownTemplate` and an HTTP 404.
 
 Each file is read with a 4 MiB cap (4,194,304 bytes). A larger file produces
 `ErrInvalidConfig` and an HTTP 500.
 
 ## `users/<name>.json`
 
-A JSON object describing one client identity.
+A JSON object describing one client identity and its mode permissions.
 
 ```json
 {
+  "template": "owner",
   "uuid": "00000000-0000-0000-0000-000000000001",
-  "allow_tproxy": true
+  "modes": ["tproxy", "tun"],
+  "default": "tun"
 }
 ```
 
-| Field          | Type    | Required | Default | Meaning                                                                                                                    |
-| -------------- | ------- | -------- | ------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `uuid`         | string  | yes      | none    | Value substituted for `{{.UUID}}` in the template. Must be non-empty after trimming; it is not otherwise format-validated. |
-| `allow_tproxy` | boolean | no       | `false` | When true, this user may request `?inbound=tproxy`.                                                                        |
+| Field      | Type   | Required | Default    | Meaning                                                                                                                                         |
+| ---------- | ------ | -------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `template` | string | no       | `base`     | Selects `templates/<template>.json.tmpl`. Empty means `base`. Must match the name pattern. A missing file is a 404.                             |
+| `uuid`     | string | yes      | none       | Value substituted for `{{.UUID}}` in the template. Must be non-empty after trimming; it is not otherwise format-validated.                      |
+| `modes`    | array  | no       | `["tun"]`  | Modes the user may request. An empty or missing list means `["tun"]`. Every entry must be `tun` or `tproxy`.                                    |
+| `default`  | string | no       | `modes[0]` | Mode used when the request omits `mode`. Empty means the first entry in `modes`. It must be present in `modes`, otherwise the request is a 404. |
 
 Additional fields are ignored by `encoding/json`.
+
+Validation order for one render:
+
+1. Load `users/<name>.json`. Missing file is 404, malformed JSON or an empty
+   `uuid` is 500.
+2. Resolve the template profile. An empty `template` becomes `base`; an invalid
+   name is 400; a missing file is 404.
+3. Resolve the effective mode list. An empty list becomes `["tun"]`. Every entry
+   must be a known mode, otherwise 400.
+4. Resolve the effective default. An empty `default` becomes `modes[0]`. A
+   default that is not in the effective list is 404.
+5. Apply the requested `mode`. An empty value uses the effective default. An
+   unknown mode string is 400. A known mode that is not in the effective list is 403. A missing mode file is 404.
+
+Step 2 runs before mode validation, so a missing template is reported as 404 even
+when the user file also has a bad mode list.
+
+`http_clients` is not a user field. It is a valid top-level field in the current
+sing-box schema
+(<https://sing-box.sagernet.org/schema.json>) and belongs only to the owner
+profile, where it lives in `templates/owner.json.tmpl`. The renderer passes it
+through unchanged and never adds it to a friend config.
 
 Examples use placeholder UUIDs. Real user files contain secrets and must stay
 out of git; `config/` is gitignored.
@@ -124,7 +158,25 @@ Inserted rule values are copied verbatim; the renderer does not validate that
 they look like sing-box rules. Invalid rules will be returned to the client and
 only fail later in `sing-box check`.
 
-## `templates/base.json.tmpl`
+Mode file names are validated with the same pattern as user names. A missing
+mode file produces `ErrUnknownMode` and an HTTP 404.
+
+## `templates/<profile>.json.tmpl`
+
+The template file is `templates/<profile>.json.tmpl`. `profile` comes from the
+user's `template` field. An empty field selects `base`, which reads
+`templates/base.json.tmpl`. The profile name must match
+`^[A-Za-z0-9][A-Za-z0-9._-]*$`. An invalid name is an HTTP 400; a valid name
+whose file is missing is an HTTP 404.
+
+The two example profiles have different jobs:
+
+- `templates/base.json.tmpl` is the friend and default base. It has no
+  `http_clients`.
+- `templates/owner.json.tmpl` is the owner base. It is the same client config
+  plus a top-level `http_clients` array. `http_clients` is valid in the current
+  sing-box schema (<https://sing-box.sagernet.org/schema.json>) and belongs only
+  to the owner profile. Friends stay on `base` so they do not inherit it.
 
 The template is parsed with the standard library `text/template` using
 `Option("missingkey=error")`. The execution data contains exactly two keys:
@@ -143,10 +195,13 @@ Rules for authoring:
   document and produces a 500.
 - The top level must contain `"inbounds": []`. The renderer overwrites this key
   with the selected mode's `inbounds`, so the placeholder value is not used.
-- There is no inheritance, include, partial, or layout feature. The whole
-  document lives in this one file.
+- There is no inheritance, include, partial, or layout feature. Each profile is
+  one complete document.
 - The only template actions supported are those provided by `text/template`.
   No custom functions are registered.
+- The renderer never validates `http_clients` or any other sing-box field. A
+  template with an unknown field still renders and only fails in `sing-box
+check`.
 
 A minimal skeleton:
 
@@ -171,6 +226,16 @@ A minimal skeleton:
     "rules": [{ "$hook": "prefix" }, { "action": "sniff" }],
     "final": "proxy"
   }
+}
+```
+
+The owner profile is the same shape with a top-level block such as:
+
+```json
+{
+  "http_clients": [
+    { "tag": "default", "engine": "go", "version": 2, "detour": "proxy" }
+  ]
 }
 ```
 
@@ -222,7 +287,7 @@ log line per request to stderr.
 
 | Method        | Path       | Auth                   | Behavior                                                                                                       |
 | ------------- | ---------- | ---------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `GET`, `HEAD` | `/render`  | `X-Auth-User` required | Render the caller's config for `?inbound=tun\|tproxy` (default `tun`).                                         |
+| `GET`, `HEAD` | `/render`  | `X-Auth-User` required | Render the caller's config for `?mode=tun\|tproxy`. An empty mode uses the user's `default`.                   |
 | `GET`, `HEAD` | `/healthz` | none                   | Liveness only. `GET` returns the three bytes `ok\n`; `HEAD` returns headers only. No config files are touched. |
 
 Other paths and methods do not match a route and return 404. Method-not-allowed
@@ -231,10 +296,14 @@ handling is not enabled.
 ### Request handling
 
 1. Read `X-Auth-User`, trim whitespace. Empty or missing means 401.
-2. Read `?inbound=`. Empty means `tun`. Only `tun` and `tproxy` are accepted.
-3. Load the user. `tproxy` additionally requires `allow_tproxy: true`, else 403.
-4. Load the mode and the base template.
-5. Render, then compute the ETag.
+2. Load the user. Missing user is 404; malformed JSON or an empty `uuid` is 500.
+3. Load the template selected by `template` (default `base`). Invalid profile
+   name is 400; missing template is 404.
+4. Resolve `modes` (default `["tun"]`) and `default` (default `modes[0]`). An
+   unknown mode in `modes` is 400. A `default` outside `modes` is 404.
+5. Read `?mode=`. Empty uses the resolved default. An unknown mode string is 400. A known mode that is not in `modes` is 403.
+6. Load the selected mode file. Missing mode file is 404.
+7. Render, then compute the ETag. Render failures are 500.
 
 The `X-Auth-User` header is the only identity source. Query parameters never
 select a different user.
@@ -263,15 +332,15 @@ writes no body.
 
 ### Status codes
 
-| Status | Condition                                                    |
-| ------ | ------------------------------------------------------------ |
-| 200    | Successful render, or `GET /healthz`.                        |
-| 304    | `If-None-Match` matches the current ETag on `/render`.       |
-| 400    | User name or `?inbound=` value fails validation.             |
-| 401    | `X-Auth-User` is missing or blank.                           |
-| 403    | `?inbound=tproxy` for a user without `allow_tproxy: true`.   |
-| 404    | `users/<name>.json` or `modes/<mode>.json` does not exist.   |
-| 500    | Template, JSON, hook, or other configuration/render failure. |
+| Status | Condition                                                                                                                         |
+| ------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| 200    | Successful render, or `GET /healthz`.                                                                                             |
+| 304    | `If-None-Match` matches the current ETag on `/render`.                                                                            |
+| 400    | User name, template profile name, or mode string fails validation; or a user's `modes` list contains an unknown mode.             |
+| 401    | `X-Auth-User` is missing or blank.                                                                                                |
+| 403    | A known mode is requested but is not in the user's `modes` list.                                                                  |
+| 404    | Unknown user, missing template file, missing mode file, or a `default` that is not in the user's effective `modes` list.          |
+| 500    | Malformed user JSON, empty `uuid`, oversized file, template error, JSON error, hook error, or other configuration/render failure. |
 
 Error responses on `GET` are JSON objects with a single generic message:
 
@@ -279,7 +348,7 @@ Error responses on `GET` are JSON objects with a single generic message:
 { "error": "unauthorized" }
 ```
 
-The messages are `unauthorized`, `invalid request`, `tproxy not allowed`,
+The messages are `unauthorized`, `invalid request`, `mode not allowed`,
 `not found`, and `render failed`. Filesystem paths and template contents are
 never returned to the client. On `HEAD`, errors are status-only.
 
@@ -321,20 +390,36 @@ a graceful shutdown; a second signal exits immediately.
 existing per-client JSON configs:
 
 ```bash
-./scripts/import-live.sh --from <dir-of-live-configs> --to ./config [--owner general]
+./scripts/import-live.sh --from <dir-of-live-configs> --to ./config [--owner general] [--tproxy-json <file>]
 ```
 
-It writes `templates/base.json.tmpl`, `modes/tun.json`, `modes/tproxy.json`, and
-`users/<name>.json`. It removes inbounds and the `mixed-in` resolve rule from
-the base, inserts the `prefix` marker, replaces UUIDs with `{{.UUID}}`, and
-grants `allow_tproxy` only to the owner (default `general`). The generated tree
-contains real UUIDs and must never be committed; `config/` is gitignored.
+It writes both profile templates, both modes, and one user file per client:
+
+- `templates/base.json.tmpl` from the first non-owner config. Inbounds and the
+  `mixed-in` resolve rule are removed, a `prefix` marker is inserted, and UUIDs
+  become `{{.UUID}}`. This is the friend profile.
+- `templates/owner.json.tmpl` from the owner config, with the same cleanup and
+  the owner's top-level `http_clients` kept. This is the owner profile.
+- `modes/tun.json` with the tun and mixed inbounds plus the resolve rule.
+- `modes/tproxy.json` with only the tproxy inbound.
+- `users/<name>.json` with each client's UUID. The owner (default `general`)
+  gets `{"template": "owner", "modes": ["tproxy", "tun"], "default": "tun"}`.
+  Every other user gets `{"uuid": ...}`, which defaults to `base` and `tun`.
+
+Live client configs normally carry no tproxy inbound. `--tproxy-json <file>`
+supplies one from a separate file. That file may be a bare tproxy inbound object
+or an object whose `inbounds` array contains a tproxy inbound.
+
+The generated tree contains real UUIDs and must never be committed; `config/` is
+gitignored.
 
 ## Deployment
 
 - `deploy/nginx.conf.example` terminates TLS, performs Basic Auth, and proxies
-  `/sing-box.json` to `http://127.0.0.1:8080/render` with
-  `X-Auth-User: $remote_user`.
+  `/sing-box.json` to `http://127.0.0.1:8080/render$is_args$args` with
+  `X-Auth-User: $remote_user`. The `$is_args$args` suffix preserves the `mode`
+  query, for example `?mode=tproxy`; an empty query falls back to the user's
+  `default`.
 - `deploy/sb-render.service.example` runs the binary as an unprivileged user
   with a hardened systemd unit and a loopback-only listener.
 - `Dockerfile` builds a static binary and ships it in a scratch runtime, running
