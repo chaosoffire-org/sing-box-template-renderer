@@ -14,12 +14,18 @@ import (
 // Typed loader errors. Callers map these to HTTP status codes, so they are
 // wrapped (never replaced) to keep errors.Is working through context.
 var (
-	ErrInvalidName      = errors.New("invalid name")
-	ErrUnknownUser      = errors.New("unknown user")
-	ErrUnknownMode      = errors.New("unknown mode")
-	ErrTproxyNotAllowed = errors.New("tproxy not allowed")
-	ErrUnknownTemplate  = errors.New("unknown template")
-	ErrInvalidConfig    = errors.New("invalid config")
+	ErrInvalidName     = errors.New("invalid name")
+	ErrUnknownUser     = errors.New("unknown user")
+	ErrUnknownMode     = errors.New("unknown mode")
+	ErrModeNotAllowed  = errors.New("mode not allowed")
+	ErrUnknownTemplate = errors.New("unknown template")
+	ErrInvalidConfig   = errors.New("invalid config")
+)
+
+// Defaults applied when a user file omits the corresponding field.
+const (
+	defaultTemplate = "base"
+	defaultMode     = "tun"
 )
 
 // maxConfigSize bounds every file the loader reads. Config fragments are small
@@ -131,50 +137,89 @@ func (l *Loader) LoadMode(name string) (Mode, error) {
 	return mode, nil
 }
 
-// LoadTemplate reads templates/base.json.tmpl. It deliberately does not parse
-// the template: Render owns parsing, and a text template is not JSON.
-func (l *Loader) LoadTemplate() ([]byte, error) {
-	data, err := l.read("templates/base.json.tmpl")
+// LoadTemplate reads templates/<profile>.json.tmpl. An empty profile selects
+// the default "base" template. It deliberately does not parse the template:
+// Render owns parsing, and a text template is not JSON.
+func (l *Loader) LoadTemplate(profile string) ([]byte, error) {
+	if profile == "" {
+		profile = defaultTemplate
+	}
+	if err := validateConfigName(profile); err != nil {
+		return nil, fmt.Errorf("template %q: %w", profile, err)
+	}
+
+	data, err := l.read("templates/" + profile + ".json.tmpl")
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("template %q: %w", "base.json.tmpl", ErrUnknownTemplate)
+			return nil, fmt.Errorf("template %q: %w", profile, ErrUnknownTemplate)
 		}
-		return nil, fmt.Errorf("template %q: %w: %v", "base.json.tmpl", ErrInvalidConfig, err)
+		return nil, fmt.Errorf("template %q: %w: %v", profile, ErrInvalidConfig, err)
 	}
 	return data, nil
 }
 
-// Load resolves everything needed for one render. An empty inbound selects
-// "tun"; tproxy requires the user to opt in with allow_tproxy.
-func (l *Loader) Load(name, inbound string) (Config, error) {
-	if inbound == "" {
-		inbound = "tun"
-	}
-	switch inbound {
-	case "tun", "tproxy":
-	default:
-		return Config{}, fmt.Errorf("inbound %q: %w", inbound, ErrInvalidName)
-	}
-
+// Load resolves everything needed for one render. The user's template, modes,
+// and default mode select the template and mode files; an empty requested mode
+// falls back to the user's default. A requested mode outside the user's modes
+// is rejected.
+func (l *Loader) Load(name, mode string) (Config, error) {
 	user, err := l.LoadUser(name)
 	if err != nil {
 		return Config{}, err
 	}
-	if inbound == "tproxy" && !user.AllowTproxy {
-		return Config{}, fmt.Errorf("user %q: inbound %q: %w", name, inbound, ErrTproxyNotAllowed)
-	}
 
-	mode, err := l.LoadMode(inbound)
+	tmpl, err := l.LoadTemplate(user.Template)
 	if err != nil {
 		return Config{}, err
 	}
 
-	tmpl, err := l.LoadTemplate()
+	modes := user.Modes
+	if len(modes) == 0 {
+		modes = []string{defaultMode}
+	}
+	for _, allowed := range modes {
+		if !isKnownMode(allowed) {
+			return Config{}, fmt.Errorf("user %q: mode %q: %w", name, allowed, ErrInvalidName)
+		}
+	}
+
+	selected := user.Default
+	if selected == "" {
+		selected = modes[0]
+	}
+	if !containsMode(modes, selected) {
+		return Config{}, fmt.Errorf("user %q: default mode %q: %w", name, selected, ErrUnknownMode)
+	}
+
+	if mode == "" {
+		mode = selected
+	}
+	if !isKnownMode(mode) {
+		return Config{}, fmt.Errorf("mode %q: %w", mode, ErrInvalidName)
+	}
+	if !containsMode(modes, mode) {
+		return Config{}, fmt.Errorf("user %q: mode %q: %w", name, mode, ErrModeNotAllowed)
+	}
+
+	m, err := l.LoadMode(mode)
 	if err != nil {
 		return Config{}, err
 	}
 
-	return Config{User: user, Mode: mode, Template: tmpl}, nil
+	return Config{User: user, Mode: m, Template: tmpl}, nil
+}
+
+func isKnownMode(mode string) bool {
+	return mode == "tun" || mode == "tproxy"
+}
+
+func containsMode(modes []string, mode string) bool {
+	for _, m := range modes {
+		if m == mode {
+			return true
+		}
+	}
+	return false
 }
 
 // read opens name relative to the config root and reads at most maxConfigSize

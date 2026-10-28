@@ -36,7 +36,7 @@ func TestTemplateRender(t *testing.T) {
 			name:     "replaces UUID and Name",
 			base:     baseWithOutbound,
 			userName: "alice",
-			user:     User{UUID: testUUID, AllowTproxy: true},
+			user:     User{UUID: testUUID},
 			mode:     modeWith([]any{map[string]any{"type": "mixed", "tag": "mixed-in"}}, nil),
 			wantContain: []string{
 				`"password": "` + testUUID + `"`,
@@ -251,7 +251,7 @@ func TestRenderTproxyRemovesMarker(t *testing.T) {
 	var mode Mode
 	mode.Inbounds = []any{map[string]any{"type": "tproxy", "tag": "tproxy-in"}}
 
-	out, err := Render(base, "general", User{UUID: testUUID, AllowTproxy: true}, mode)
+	out, err := Render(base, "general", User{UUID: testUUID}, mode)
 	if err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}

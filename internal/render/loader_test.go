@@ -22,6 +22,15 @@ const testBaseTemplate = `{
   ]
 }`
 
+const testOwnerTemplate = `{
+  "inbounds": [],
+  "log": {"level": "warn"},
+  "http_clients": [{"tag": "default"}],
+  "outbounds": [
+    {"type": "trojan", "tag": "proxy", "password": "{{.UUID}}"}
+  ]
+}`
+
 // writeFixture writes rel under root, creating parent directories as needed.
 func writeFixture(t *testing.T, root, rel, content string) {
 	t.Helper()
@@ -39,7 +48,7 @@ func writeFixture(t *testing.T, root, rel, content string) {
 func writeFixtureRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	writeFixture(t, root, "users/general.json", `{"uuid":"`+testUUIDGeneral+`","allow_tproxy":true}`)
+	writeFixture(t, root, "users/general.json", `{"template":"owner","uuid":"`+testUUIDGeneral+`","modes":["tproxy","tun"],"default":"tun"}`)
 	writeFixture(t, root, "users/alice.json", `{"uuid":"`+testUUIDAlice+`"}`)
 	writeFixture(t, root, "modes/tun.json", `{
 		"inbounds": [{"type": "tun", "tag": "tun-in"}],
@@ -47,6 +56,7 @@ func writeFixtureRoot(t *testing.T) string {
 	}`)
 	writeFixture(t, root, "modes/tproxy.json", `{"inbounds": [{"type": "tproxy", "tag": "tproxy-in"}]}`)
 	writeFixture(t, root, "templates/base.json.tmpl", testBaseTemplate)
+	writeFixture(t, root, "templates/owner.json.tmpl", testOwnerTemplate)
 	return root
 }
 
@@ -85,7 +95,7 @@ func TestLoad(t *testing.T) {
 		}
 	}()
 
-	t.Run("default inbound is tun", func(t *testing.T) {
+	t.Run("general default is tun with owner template", func(t *testing.T) {
 		cfg, err := l.Load("general", "")
 		if err != nil {
 			t.Fatalf("Load(): %v", err)
@@ -93,21 +103,18 @@ func TestLoad(t *testing.T) {
 		if cfg.User.UUID != testUUIDGeneral {
 			t.Errorf("user uuid = %q, want %q", cfg.User.UUID, testUUIDGeneral)
 		}
-		if !cfg.User.AllowTproxy {
-			t.Errorf("user allow_tproxy = false, want true")
-		}
 		if got := inboundTag(t, cfg.Mode); got != "tun-in" {
 			t.Errorf("mode inbound = %q, want tun-in", got)
 		}
 		if rules := cfg.Mode.Route.Rules["prefix"]; len(rules) != 1 {
 			t.Errorf("mode prefix rules = %d, want 1", len(rules))
 		}
-		if !bytes.Equal(cfg.Template, []byte(testBaseTemplate)) {
-			t.Errorf("template bytes = %q, want %q", cfg.Template, testBaseTemplate)
+		if !bytes.Equal(cfg.Template, []byte(testOwnerTemplate)) {
+			t.Errorf("template bytes = %q, want owner template", cfg.Template)
 		}
 	})
 
-	t.Run("tproxy selects tproxy mode", func(t *testing.T) {
+	t.Run("general tproxy selects tproxy mode", func(t *testing.T) {
 		cfg, err := l.Load("general", "tproxy")
 		if err != nil {
 			t.Fatalf("Load(): %v", err)
@@ -117,26 +124,25 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
-	t.Run("alice tun", func(t *testing.T) {
-		cfg, err := l.Load("alice", "tun")
+	t.Run("alice default is tun with base template", func(t *testing.T) {
+		cfg, err := l.Load("alice", "")
 		if err != nil {
 			t.Fatalf("Load(): %v", err)
 		}
 		if cfg.User.UUID != testUUIDAlice {
 			t.Errorf("user uuid = %q, want %q", cfg.User.UUID, testUUIDAlice)
 		}
-		if cfg.User.AllowTproxy {
-			t.Errorf("alice allow_tproxy = true, want false")
+		if got := inboundTag(t, cfg.Mode); got != "tun-in" {
+			t.Errorf("mode inbound = %q, want tun-in", got)
+		}
+		if !bytes.Equal(cfg.Template, []byte(testBaseTemplate)) {
+			t.Errorf("template bytes = %q, want base template", cfg.Template)
 		}
 	})
 
-	t.Run("explicit tun inbound", func(t *testing.T) {
-		cfg, err := l.Load("general", "tun")
-		if err != nil {
-			t.Fatalf("Load(): %v", err)
-		}
-		if got := inboundTag(t, cfg.Mode); got != "tun-in" {
-			t.Errorf("mode inbound = %q, want tun-in", got)
+	t.Run("alice tproxy is not allowed", func(t *testing.T) {
+		if _, err := l.Load("alice", "tproxy"); !errors.Is(err, ErrModeNotAllowed) {
+			t.Fatalf("Load(alice, tproxy) error = %v, want ErrModeNotAllowed", err)
 		}
 	})
 }
@@ -212,13 +218,13 @@ func TestTproxy(t *testing.T) {
 		}
 	}()
 
-	t.Run("user without allow_tproxy is denied", func(t *testing.T) {
-		if _, err := l.Load("alice", "tproxy"); !errors.Is(err, ErrTproxyNotAllowed) {
-			t.Fatalf("Load(alice, tproxy) error = %v, want ErrTproxyNotAllowed", err)
+	t.Run("user without tproxy mode is denied", func(t *testing.T) {
+		if _, err := l.Load("alice", "tproxy"); !errors.Is(err, ErrModeNotAllowed) {
+			t.Fatalf("Load(alice, tproxy) error = %v, want ErrModeNotAllowed", err)
 		}
 	})
 
-	t.Run("user with allow_tproxy succeeds", func(t *testing.T) {
+	t.Run("user with tproxy mode succeeds", func(t *testing.T) {
 		if _, err := l.Load("general", "tproxy"); err != nil {
 			t.Fatalf("Load(general, tproxy): %v", err)
 		}
@@ -249,7 +255,7 @@ func TestTproxy(t *testing.T) {
 
 	t.Run("missing template", func(t *testing.T) {
 		root := writeFixtureRoot(t)
-		if err := os.Remove(filepath.Join(root, "templates", "base.json.tmpl")); err != nil {
+		if err := os.Remove(filepath.Join(root, "templates", "owner.json.tmpl")); err != nil {
 			t.Fatalf("remove template: %v", err)
 		}
 		ml := newLoader(t, root)
@@ -261,6 +267,104 @@ func TestTproxy(t *testing.T) {
 
 		if _, err := ml.Load("general", "tun"); !errors.Is(err, ErrUnknownTemplate) {
 			t.Fatalf("Load(general, tun) error = %v, want ErrUnknownTemplate", err)
+		}
+	})
+}
+
+// newUserLoader builds a loader whose only user is u.json, with the base
+// template and both known modes present.
+func newUserLoader(t *testing.T, userJSON string) *Loader {
+	t.Helper()
+	root := t.TempDir()
+	writeFixture(t, root, "users/u.json", userJSON)
+	writeFixture(t, root, "templates/base.json.tmpl", testBaseTemplate)
+	writeFixture(t, root, "modes/tun.json", `{"inbounds": [{"type": "tun", "tag": "tun-in"}]}`)
+	writeFixture(t, root, "modes/tproxy.json", `{"inbounds": [{"type": "tproxy", "tag": "tproxy-in"}]}`)
+	l := newLoader(t, root)
+	t.Cleanup(func() {
+		if err := l.Close(); err != nil {
+			t.Errorf("Close(): %v", err)
+		}
+	})
+	return l
+}
+
+func TestUserModeSelection(t *testing.T) {
+	t.Run("empty default selects modes[0]", func(t *testing.T) {
+		l := newUserLoader(t, `{"uuid":"`+testUUIDGeneral+`","modes":["tproxy","tun"]}`)
+		cfg, err := l.Load("u", "")
+		if err != nil {
+			t.Fatalf("Load(): %v", err)
+		}
+		if got := inboundTag(t, cfg.Mode); got != "tproxy-in" {
+			t.Errorf("mode inbound = %q, want tproxy-in", got)
+		}
+	})
+
+	t.Run("default outside modes is rejected", func(t *testing.T) {
+		l := newUserLoader(t, `{"uuid":"`+testUUIDGeneral+`","modes":["tun"],"default":"bogus"}`)
+		if _, err := l.Load("u", ""); !errors.Is(err, ErrUnknownMode) {
+			t.Fatalf("Load() error = %v, want ErrUnknownMode", err)
+		}
+	})
+
+	t.Run("unknown requested mode is invalid", func(t *testing.T) {
+		l := newUserLoader(t, `{"uuid":"`+testUUIDGeneral+`","modes":["tun"]}`)
+		if _, err := l.Load("u", "bogus"); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("Load() error = %v, want ErrInvalidName", err)
+		}
+	})
+
+	t.Run("mode outside user modes is not allowed", func(t *testing.T) {
+		l := newUserLoader(t, `{"uuid":"`+testUUIDGeneral+`","modes":["tun"]}`)
+		if _, err := l.Load("u", "tproxy"); !errors.Is(err, ErrModeNotAllowed) {
+			t.Fatalf("Load() error = %v, want ErrModeNotAllowed", err)
+		}
+	})
+
+	t.Run("invalid modes entry is rejected", func(t *testing.T) {
+		l := newUserLoader(t, `{"uuid":"`+testUUIDGeneral+`","modes":["tun","socks"]}`)
+		if _, err := l.Load("u", ""); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("Load() error = %v, want ErrInvalidName", err)
+		}
+	})
+}
+
+func TestTemplateSelection(t *testing.T) {
+	t.Run("empty template selects base", func(t *testing.T) {
+		root := writeFixtureRoot(t)
+		l := newLoader(t, root)
+		defer func() { _ = l.Close() }()
+
+		if _, err := l.LoadTemplate(""); err != nil {
+			t.Fatalf("LoadTemplate(\"\"): %v", err)
+		}
+		cfg, err := l.Load("alice", "tun")
+		if err != nil {
+			t.Fatalf("Load(): %v", err)
+		}
+		if !bytes.Equal(cfg.Template, []byte(testBaseTemplate)) {
+			t.Errorf("template bytes = %q, want base template", cfg.Template)
+		}
+	})
+
+	t.Run("missing owner file is unknown", func(t *testing.T) {
+		root := writeFixtureRoot(t)
+		if err := os.Remove(filepath.Join(root, "templates", "owner.json.tmpl")); err != nil {
+			t.Fatalf("remove owner template: %v", err)
+		}
+		l := newLoader(t, root)
+		defer func() { _ = l.Close() }()
+
+		if _, err := l.Load("general", "tun"); !errors.Is(err, ErrUnknownTemplate) {
+			t.Fatalf("Load() error = %v, want ErrUnknownTemplate", err)
+		}
+	})
+
+	t.Run("invalid template name is rejected", func(t *testing.T) {
+		l := newUserLoader(t, `{"uuid":"`+testUUIDGeneral+`","template":"../evil","modes":["tun"]}`)
+		if _, err := l.Load("u", ""); !errors.Is(err, ErrInvalidName) {
+			t.Fatalf("Load() error = %v, want ErrInvalidName", err)
 		}
 	})
 }

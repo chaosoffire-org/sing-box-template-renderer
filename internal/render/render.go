@@ -16,9 +16,16 @@ import (
 )
 
 // User is a single client identity read from users/<name>.json.
+//
+// Template selects templates/<template>.json.tmpl and defaults to "base" when
+// empty. Modes lists the modes the user may request and defaults to ["tun"]
+// when empty. Default names the mode used when the request omits one and
+// defaults to Modes[0] when empty; it must be one of Modes.
 type User struct {
-	UUID        string `json:"uuid"`
-	AllowTproxy bool   `json:"allow_tproxy"`
+	Template string   `json:"template"`
+	UUID     string   `json:"uuid"`
+	Modes    []string `json:"modes"`
+	Default  string   `json:"default"`
 }
 
 // Mode describes the parts of a rendered configuration that vary by inbound
